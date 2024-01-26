@@ -1,0 +1,958 @@
+
+import cdstoolbox as ct
+import numpy as np
+import datetime
+from datetime import date
+from dateutil.relativedelta import relativedelta
+
+MAIN_MARKDOWN = f'''
+The user can select geographical regions (zones / the whole globe) or Volcanoes.
+
+By clicking on a specific region or the whole globe, a time series chart of anomalies for the selected variable and area, with overplotted volcanic eruptions, will be displayed.
+
+By selecting a volcano on the map, global maps of anomalies, averaged over a number of months following the volcanic event, will be displayed.
+'''
+
+# ERA5 DATES
+START_YEAR = 1979
+END_YEAR = 2022 #date.today().year
+END_MONTH = 12 #date.today().month
+last_yearmonth = (datetime.datetime(END_YEAR, END_MONTH, 1) - datetime.timedelta(days=1))
+ym = datetime.date(last_yearmonth.year, last_yearmonth.month, 1).strftime('%b %Y')
+ymst = datetime.date(START_YEAR, 1, 1).strftime('%b %Y')
+DATA_PERIOD = (ymst, ym)
+# CAMS DATES
+CAMS_PERIOD = ('Jan 2003', 'Jun 2020')
+CAMS_NEXT = datetime.datetime.strptime(CAMS_PERIOD[1], '%b %Y') + datetime.timedelta(days=31)
+CAMS_BEFORE = datetime.datetime.strptime(CAMS_PERIOD[0], '%b %Y') - datetime.timedelta(days=1)
+CAMS_NEXT = CAMS_NEXT.strftime('%b %Y')
+CAMS_BEFORE = CAMS_BEFORE.strftime('%b %Y')
+
+# input lists
+aggregation = 'CMV'
+VARIABLELIST = ['Surface air temperature', 'Stratospheric temperature at 50hPa', 'Stratospheric temperature at 100hPa','Surface solar radiation downwards', 'Total column ozone', 'Total aerosol optical depth at 550nm'][::-1]
+VARIABLE_DEFAULT = 'Surface air temperature'
+STATLIST = ['4 months rolling mean', '12 months rolling mean',  'winter mean', 'spring mean', 'summer mean', 'autumn mean', 'yearly mean', 'decadal mean']
+REGIONS = ['Geographical zones', 'Whole globe', 'Volcanic eruptions']
+REGION_DEFAULT = 'Geographical zones'
+# plot parameters
+RANGESLIDER = {
+                'visible':True,
+                'thickness': 0.05,
+                'bordercolor': '#000000',
+                'borderwidth': 1,
+                'yaxis':{
+                    'range':[-10000,-10001], },
+            }
+DARK_GRAY = 'rgb(72, 72, 72)'
+LIGHT_GRAY = 'rgb(182, 182, 182)'
+LIGHTER_GRAY = 'rgb(236, 236, 236)'
+
+RETRIEVE_REQUESTS = {
+    "Total aerosol optical depth at 550nm": {
+        "rules" : [{
+            "dataset": "cams-global-reanalysis-eac4-monthly",
+            "request": {
+                "variable": "total_aerosol_optical_depth_550nm",
+                "product_type": "monthly_mean",
+            },
+            "target_units": "~",
+            "yearmonthst": CAMS_PERIOD[0],
+            "yearmonth": CAMS_PERIOD[1],
+        }],
+        "update_attrs": {
+            "long_name": "Total aerosol optical depth anomalies at 550nm (~)",
+        },
+        "source": "CAMS",
+        "title": "Total aerosol optical depth anomalies at 550nm (~)",
+    },
+    "Stratospheric temperature at 50hPa": {
+        "rules" : [{
+            "dataset": "reanalysis-era5-pressure-levels-monthly-means",
+            "request": {
+                "variable": "temperature",
+                "product_type": "monthly_averaged_reanalysis",
+                "pressure_level": 50,
+                "time": "00:00",
+                "_rate_type":"accumulation",
+            },
+            "target_units": "C",
+            "yearmonthst": DATA_PERIOD[0],
+            "yearmonth": DATA_PERIOD[1],
+        }],
+        "update_attrs": {
+            "long_name": "Stratospheric temperature anomalies at 50hPa (°C)",
+        },
+        "source": "ERA5",
+        "title": "Stratospheric temperature anomalies at 50hPa (°C)",
+    },
+    "Stratospheric temperature at 100hPa": {
+        "rules" : [{
+            "dataset": "reanalysis-era5-pressure-levels-monthly-means",
+            "request": {
+                "variable": "temperature",
+                "product_type": "monthly_averaged_reanalysis",
+                "pressure_level": 100,
+                "time": "00:00",
+                '_rate_type':'accumulation',
+            },
+            "target_units": "C",
+            "yearmonthst": DATA_PERIOD[0],
+            "yearmonth": DATA_PERIOD[1],
+        }],
+        "update_attrs": {
+            "long_name": "Stratospheric temperature anomalies at 100hPa (°C)",
+        },
+        "source": "ERA5",
+        "title": "Stratospheric temperature anomalies at 100hPa (°C)",
+    },
+    "Surface solar radiation downwards": {
+        "rules" : [{
+            "dataset": "reanalysis-era5-single-levels-monthly-means",
+            "request": {
+                "variable": "surface_solar_radiation_downwards",
+                "product_type": "monthly_averaged_reanalysis",
+                "time": "00:00",
+                '_rate_type':'accumulation',
+            },
+            "target_units": "MJ m-2",  # source units J m^2
+            "yearmonthst": DATA_PERIOD[0],
+            "yearmonth": DATA_PERIOD[1],
+        }],
+        "update_attrs": {
+            "long_name": "Surface solar radiation downwards anomalies (MJ/m²)",
+        },
+        "source": "ERA5",
+        "title": "Surface solar radiation downwards anomalies (MJ/m²)",
+    },
+    "Surface air temperature": {
+        "rules" : [{
+             "dataset": "reanalysis-era5-single-levels-monthly-means",
+             "request": {
+                "variable": "2m_temperature",
+                "product_type": "monthly_averaged_reanalysis",
+                "time": "00:00",
+                '_rate_type':'accumulation',
+             },
+            "target_units": "C",
+            "yearmonthst": DATA_PERIOD[0],
+            "yearmonth": DATA_PERIOD[1],
+        }],
+        "update_attrs": {
+            "long_name": "Surface air temperature anomalies (°C)",
+        },
+        "source": "ERA5",
+        "title": "Surface air temperature anomalies (°C)",
+    },
+    "Total column ozone": {
+        "rules" : [{
+             "dataset": "reanalysis-era5-single-levels-monthly-means",
+            "request": {
+                "variable": "total_column_ozone",
+                "product_type": "monthly_averaged_reanalysis",
+                "time": "00:00",
+                "grid" : ['0.75', '0.75'],
+                "_rate_type":"accumulation",
+            },
+            "target_units": "DU",  #"kg m-2",
+            "yearmonthst": DATA_PERIOD[0],
+            "yearmonth": CAMS_BEFORE,
+            },
+            {"dataset": "cams-global-reanalysis-eac4-monthly",
+            "request": {
+                'product_type': 'monthly_mean',
+                'variable': 'total_column_ozone',
+                "grid" : ['0.75', '0.75'],
+            },
+            'target_units': "DU",  #'kg m-2',
+            "yearmonthst": CAMS_PERIOD[0],
+            "yearmonth": CAMS_PERIOD[1],
+         },
+         {"dataset": "reanalysis-era5-single-levels-monthly-means",
+            "request": {
+                "variable": "total_column_ozone",
+                "product_type": "monthly_averaged_reanalysis",
+                "time": "00:00",
+                "grid" : ['0.75', '0.75'],
+                "_rate_type":"accumulation",
+            },
+            "target_units": "DU",  #"kg m-2",
+            "yearmonthst": CAMS_NEXT,
+            "yearmonth": DATA_PERIOD[1],
+            },],
+     "update_attrs": {
+         "long_name": "Total coulmn ozone anomalies (DU)",
+     },
+     "source": "ERA5/CAMS",
+     "title": "Total coulmn ozone anomalies (DU)",
+    },
+}
+
+SYMBOL_CONFIG = {
+        "legend": "off",
+		"symbol_type":  "marker",
+		"symbol_colour":  "red",
+	    "symbol_height":  0.7,
+		"symbol_marker_index": 15
+}
+# Magics plot configuration dictionary
+CONTOUR1 = {
+        'contour': 'off',
+        'legend': 'on',
+        'contour_label': 'off',
+        'contour_shade': 'on',
+        "contour_shade_method": "area_fill",
+        "colour_shade_technique": "cell_shading",
+        "contour_level_selection_type":  "level_list",
+        "contour_shade_colour_method": "list",
+}
+MAP_CONFIG = {
+    'projection':{
+        'map_grid': "off",
+        'subpage_align_vertical': "top",
+        'subpage_map_area_definition': "corners",
+        'map_label_height': 0.0,
+        'subpage_map_projection': 'cylindrical',
+        'super_page_x_length': 21.7,
+        'super_page_y_length': 13.0,
+        'subpage_x_length': 95,
+        'subpage_y_length': 95,
+        'layout': 'positional',
+    },
+    'contour': CONTOUR1,
+    'legend': {
+        'legend_display_type': 'continuous',
+    },
+}
+# colorbrewer_RdBu_20 + 2 white bins in the middle
+COLOUR_LIST_20 = ["#053061", "#104279", "#1c5590", "#2969a5", "#377fb7", "#4795c4", "#6ba9cf", "#8dbdda", "#aed1e5", "#d1e5f0", "#eff1f0", "#eff1f0", "#fddbc7", "#f9bfa5", "#f1a487", "#e8886d", "#dc6d56", "#cc5144", "#b83837", "#9f222d", "#840d25", "#67001f"]
+# colorbrewer_RdBu_10 + 2 white bins in the middle
+COLOUR_LIST_10 =["#053061", "#2166ac", "#4393c3", "#92c5de", "#d1e5f0", "#eff1f0", "#eff1f0", "#fddbc7", "#f4a582", "#d6604d", "#b2182b", "#67001f"]
+
+####################
+#
+####################
+
+def get_periods(start='Jan 1979', end=ym):
+    '''
+    generate years and months for retrieve
+    '''
+    periods = []
+    cur_date = datetime.datetime.strptime(start, '%b %Y')
+    periods.append(cur_date)
+    while cur_date < datetime.datetime.strptime(end, '%b %Y'):
+        cur_date += relativedelta(months=1)
+        periods.append(cur_date)
+    dates = {}
+    for y in list(dict.fromkeys([p.year for p in periods])):
+        months = ['%02d' % p.month for p in periods if p.year == y]
+        dates[str(y)] = months
+    return dates
+
+
+####################
+# prepare data
+####################
+
+def retrieve_data(dataset="reanalysis-era5-single-levels-monthly-means", **kwargs):
+    request = {
+        "product_type": kwargs.get("dataset"),
+        "year": kwargs.get("year"),
+        "month": kwargs.get("month"),
+    }
+    request.update(kwargs)
+    data = ct.catalogue.retrieve(dataset, request)
+    return data
+
+def prepare_app_data(variable):
+
+    rules = RETRIEVE_REQUESTS[variable]["rules"]
+    data=[]
+    for rule in rules:
+        dates = get_periods(rule["yearmonthst"], rule["yearmonth"])
+        for key in dates:
+            data_chunk = retrieve_data(
+                dataset = rule["dataset"],
+                month = dates[key],
+                year = key,
+                **rule["request"],
+            )
+            data.append(ct.cdm.drop_coordinates(data_chunk, 'experimentVersionNumber'))
+    data = ct.cube.concat(data, dim='time', coords='minimal')
+    variable_cdm = RETRIEVE_REQUESTS[variable]["rules"][0]["request"]["variable"]
+    data = data * scale_units(variable_cdm) + offset_units(variable_cdm)
+    return data
+
+def calculate_anomaly(data, interval):
+    anom = ct.climate.anomaly(data, interval=[str(year) for year in interval])
+    return anom
+
+#######################
+# calculate statistics
+#######################
+
+def make_stats_weighted(data, stype, variable, yearmonth, yearmonthst):
+    '''
+    make statistics from monthly mean data
+    year_mean = calendar year mean
+    12month_mean = 12 month rolling mean
+    decadal_mean = 10 year mean
+    4month_mean = 4 month rolling mean
+    seasonal_mean = seasonal mean with all seasons present
+    winter_mean = DJF mean
+    spring_mean = MAM mean
+    summer_mean = JJA mean
+    autumn_mean = SON mean
+    '''
+
+    if stype == 'year_mean':
+        weighted_data = ct.cmfstats.make_weighted(data, stype, variable)
+        stat_data = ct.cube.resample(weighted_data, freq='year', how='sum')
+    elif stype == 'decadal_mean':
+        weighted_data = ct.cmfstats.make_weighted(data, 'year_mean', variable)
+        stat_data = ct.cube.resample(ct.cube.resample(weighted_data, freq='year', how='sum'), freq='10AS', how='mean')
+    elif stype == '12month_mean':
+        stat_data = ct.cmfstats.make_weighted(data, stype, variable)
+    elif stype == '4month_mean':
+        stat_data = ct.cmfstats.make_weighted(data, stype, variable)
+    elif stype == 'seasonal_mean':
+        start_date = ct.cmfstats.start_date_seasonal(yearmonthst)
+        end_date = ct.cmfstats.end_date_seasonal(yearmonth)
+        subset_data = ct.cube.select(data, time=[start_date, end_date])
+        weighted_data = ct.cmfstats.make_weighted(subset_data, stype, variable)
+        stat_data = ct.cube.resample(weighted_data, freq='3MS', how='sum')
+    elif stype in ['winter_mean', 'spring_mean', 'summer_mean', 'autumn_mean']:
+        weighted_data = ct.cmfstats.make_weighted(data, stype, variable)
+        stat_data = ct.cube.resample(weighted_data, freq='year', how='sum')
+
+    return stat_data
+
+
+
+#####################
+# make regional data
+#####################
+
+def map_region_to_id(val):
+    val_dict = {
+        'Arctic'                 : 'ARC',
+        'Northern mid-latitudes' : 'NML',
+        'Equatorial region'      : 'EQR',
+        'Southern mid-latitudes' : 'SML',
+        'Antarctic'              : 'ANT',
+        'Whole globe'            : 'GLO',
+        'All land'               : 'LAN',
+        'All Oceans'             : 'OCE',
+    }
+    try:
+        return val_dict[val]
+    except:
+        return val
+    else:
+        return val_dict[val]
+
+def map_usage(val):
+    val_dict = {
+        'All land'  : 'land',
+        'All oceans': 'sea',
+    }
+    try:
+        return val_dict[val]
+    except:
+        return 'all'
+    else:
+        return val_dict[val]
+
+def make_region_data(data, aggregation, region, region_id, usage, variable):
+
+    step_1 = 4
+    if region_id in ['GLO', 'LAN', 'OCE']:
+        step_1 = 1
+
+    if usage in ['land', 'sea']:
+        sea_land_mask = ct.catalogue.retrieve(
+            'reanalysis-era5-single-levels',
+             {
+                 'product_type': 'reanalysis',
+                 'variable': 'land_sea_mask',
+                 'year': '2017',
+                 'month': '01',
+                 'day': '01',
+                 'time': '00:00',
+             },
+        )
+        if usage == 'land':
+            mask = sea_land_mask > 0.5
+        else:
+            mask = sea_land_mask <= 0.5
+        data = ct.cube.where(
+            mask > 0, data
+        )
+    borders = ct.shapes.get('cmf', 'cmv_regions')
+    region_data = ct.shapes.average(data, borders, all_touched=True)
+    region_data = ct.cube.select(
+        region_data, cmv_regions=region_id
+    )
+
+    return {'data': region_data, 'step_1': step_1}
+
+
+
+############
+# line chart
+############
+
+def _inclusive_range(*args):
+    """
+    Utility function for handling inclusive date ranges.
+
+    """
+    args = list(args)
+    if len(args) == 0:
+        args[0] += 1
+    elif len(args) >= 2:
+        args[1] += 1
+    return list(range(*args))
+
+def plotline_time_series(units, data, xaxis_limits, title='', step=1, tickvals_offset=12, ticktext_offset=12):
+
+    # Set up the plot style
+    layout_kwargs = {
+        'xaxis': {
+            'rangeslider': RANGESLIDER,
+            'type': 'date',
+            'title': {'text': ''},
+            'color': LIGHT_GRAY,
+            'gridcolor': LIGHTER_GRAY,
+            'fixedrange': True,
+            'range' : [str(xaxis_limits[0]-1) + '-01', str(xaxis_limits[1]+1) + '-12'],
+        },
+        'yaxis': {
+            'color': LIGHT_GRAY,
+            'gridcolor': LIGHTER_GRAY,
+            'tickmode': 'array',
+            'title': {'text': f'{units}'},
+        },
+        'legend': {},
+        'margin': {'r': 30, 'b': 20, 't': 20},
+        'height': 290,
+        'font': {'family': 'Verdana', 'color': DARK_GRAY, 'size': 12},
+        'annotations': [
+            {
+                'text': title.format(**locals(), **globals()),
+                'xref': 'paper',
+                'yref': 'paper',
+                'x': 0,
+                'y': 1.1,
+                'showarrow': False,
+            }
+        ],
+
+    }
+
+    # Generate the plot
+    hovertemplate = '%{y:.4f}<br>%{x}<extra></extra>'
+    fig = ct.chart.line(data['monthly_mean'],
+        layout_kwargs=layout_kwargs,
+        name=('monthly mean'),
+        scatter_kwargs={
+            'hovertemplate': hovertemplate,
+            'line' : {'shape': 'spline',
+                'color': 'rgba(102, 204, 255, 0.3)'},   # blue
+                'mode':'lines'})
+
+    for st in STATLIST:
+        s = map_statistics_to_key(st)
+        line_colour = map_line_colour(s)
+        fig = line_chart(data[s], st, line_colour, fig, hovertemplate)
+
+    return fig
+
+
+def line_chart(data, name, color, fig, hovertemplate):
+    return(ct.chart.line(
+            data,
+            fig=fig,
+            scatter_kwargs={
+                'name': name,
+                'hovertemplate': hovertemplate,
+                'visible' : 'legendonly',
+                'line': {'shape': 'spline',
+                    'color': color},
+                'mode': 'lines'})
+    )
+
+
+def make_line_plot(units, region_data, title, step_1, region, event_dict, xaxis_limits):
+
+    fig = plotline_time_series(
+        units,
+        region_data,
+        xaxis_limits,
+        title=title,
+        step=step_1,
+    )
+
+    if event_dict != {}:
+        valid = 'false'
+        for key in event_dict:
+            if event_dict[key] != {}:
+                valid = 'true'
+        if valid == 'true':
+            fig = plot_events(event_dict, fig)
+
+    return fig
+
+def plot_events(event_dict, fig):
+    for key in event_dict:
+        value = event_dict[key]
+        if value != {}:
+            ex = value['x']
+            ey = value['y']
+            elabel = value['label']
+
+            fig = ct.chart.scatter(ex, ey,
+                           name = key,
+                           fig = fig,
+                           scatter_kwargs = {
+                               'hoverinfo': 'text',
+                               'hovertext': elabel,
+                               'mode': 'markers',
+                               'marker': {'size': 20,
+                                          'color': 'lightcoral',
+                                          'line': {'width': 1,
+                                            'color': 'darkslategrey'}
+                                         },
+                               'opacity': 0.4
+                           })
+    return fig
+
+
+def map_line_colour(val):
+    val_dict = {
+        'monthly_mean' : 'rgba(102, 204, 255, 0.3)',  # blue
+        'year_mean'    : '#845095',                   # purple,
+        'decadal_mean' : '#0000ff',                   # royal blue
+        'seasonal_mean': '#ffe0e0',                   # light coral
+        '12month_mean' : '#008B8B',                   # dark cyan
+        '4month_mean'  : '#ff00ff',                   # magenda
+        'winter_mean'  : '#00ffff',                   # cyan
+        'spring_mean'  : '#7cfc00',                   # lawn green
+        'summer_mean'  : '#ffd700',                   # gold
+        'autumn_mean'  : '#228b22',                   # forest green
+    }
+    try:
+        return val_dict[val]
+    except:
+        return '#000000'
+    else:
+        return val_dict[val]
+
+def get_legend_step(absm):
+    if absm <= 10.0:
+        legend_step = 1
+    if absm > 10.0:
+        legend_step = 2
+    elif absm > 20.0:
+        legend_step = 3
+    elif absm > 30.0:
+        legend_step = 4
+    else:
+        legend_step = 5
+    return legend_step
+
+def calculate_levels(mins, maxs, par):
+
+    absm = max(abs(min(mins)), abs(max(maxs)))
+
+    if absm < 2:
+        # ncolours = 12
+        # nlevels = ncolours + 1 = 13
+        colour_list = COLOUR_LIST_10
+        ext1 = 0.25
+        levels_base = [-ext1, -0.1, -0.05, -0.02, -0.01, 0, 0.01, 0.02, 0.05, 0.1, ext1]
+        ext2 = ext1 + (ext1 - absm) if absm <= ext1 else absm
+        levels = [-ext2] + levels_base + [ext2]
+
+    else:
+        colour_list = COLOUR_LIST_10 if absm < 10 else COLOUR_LIST_20
+        ext2 = ct.math.ceil(absm)
+        if ext2 == 10:
+            fra = 0.6
+        else:
+            fra = 0.5 if absm < 5 else 0.7
+        ext1 = ct.math.floor(ext2 * fra)
+        step = 2*ext1/(len(colour_list) - 2)
+        levels_base = list(np.arange(-ext1, ext1+step, step))
+        levels = [-ext2] + levels_base + [ext2]
+        levels = [round(i,1) for i in levels]
+
+    return  colour_list, levels
+
+####################
+# utility functions
+####################
+
+def scale_units(var):
+    val_dict = {
+        'total_column_ozone' : 100000/2.1415,          # toz  kg/m^2 -> DU
+        'total_column_sulphur_dioxide': 100000/2.1415, #  kg/m^2 -> DU
+        'surface_solar_radiation_downwards' : 1/1000000,  # J/m2 = MJ/m2
+    }
+    try:
+        return val_dict[var]
+    except:
+        return 1.0
+    else:
+        return val_dict[var]
+
+def offset_units(var):
+    val_dict = {
+        'surface_air_temperature'  : -273.0,
+        '2m_temperature'           : -273.0,
+        'temperature'              : -273.0,
+    }
+    try:
+        return val_dict[var]
+    except:
+        return 0.0
+    else:
+        return val_dict[var]
+
+
+def map_statistics_to_key(val):
+    val_dict = {
+        '4 months rolling mean'  : '4month_mean',
+        '12 months rolling mean' : '12month_mean',
+        'seasonal mean'          : 'seasonal_mean',
+        'winter mean'            : 'winter_mean',
+        'spring mean'            : 'spring_mean',
+        'summer mean'            : 'summer_mean',
+        'autumn mean'            : 'autumn_mean',
+        'yearly mean'            : 'year_mean',
+        'decadal mean'           : 'decadal_mean'
+    }
+    try:
+        return val_dict[val]
+    except:
+        return val
+    else:
+        return val_dict[val]
+
+
+#####################
+# significant events
+#####################
+def get_events(yearmonthst, yearmonth, ymin, events=['Volcanic eruption'], aggregation='CMV', region='The entire globe'):
+
+    event_dict = {}
+    eresult = ct.cmfdb.events(event_subtype=events, startedAtTime=yearmonthst, endedAtTime=yearmonth, ymin=ymin, named_region=region, category_limit=3)
+    event_dict = eresult['events']
+    eve = event_dict['Volcanic eruption']
+    lats = eve['latitude']
+    lons = eve['longitude']
+    labels = eve['label']
+    shapesne = ct.shapes.catalogue.countries()
+    for i in range(0, len(lats)-1):
+        shape = ct.shapes.intersects(shapesne, point=(float(lats[i]), float(lons[i])))
+        if shape == False:
+            labels[i] = labels[i] + '<br />' + '(' + str(round(float(lons[i]),2)) + ', ' + str(round(float(lats[i]),2)) + ')'
+        else:
+            area =  str(ct.shapes.get_attributes(shape)['NAME_EN'].encode('latin-1').decode())
+            labels[i] = labels[i] + '<br />' +  area + ' (' + str(round(float(lons[i]),2)) + ', ' + str(round(float(lats[i]),2)) + ')'
+
+        eve['label'] = labels
+        event_dict['Volcanic eruption'] = eve
+
+    return event_dict
+
+def make_nmonths_list(ts, te, day_en, yearmonth):
+    mlist = [1, 6, 12, 24]
+    if int(day_en) >= 15:
+        ts = ts + relativedelta(months=1) #  exclude month of the eruption
+    if ts >= te:
+        nmonths = 1
+    else:
+        nmonths = (te.year - ts.year) * 12 + (te.month - ts.month)
+    if nmonths > 0 and nmonths not in mlist:
+        mlist = sorted([1, 6, 12, 24, nmonths], reverse=False)
+    nmonth_list = []
+    for n in mlist:
+        nmonth_list.append(n)
+    return nmonth_list
+
+def get_event_y(ymin):
+    ymin_abs = abs(ymin)
+    if abs(ymin) < 0.1 :
+        delta = abs(ymin)/100
+    elif abs(ymin) < 1 :
+        delta = 0.2
+    elif ymin_abs < 20:
+        delta = abs(ymin)/4
+    else:
+        delta = 2
+    ymin = ymin-delta
+    return ymin
+
+##################################################################
+# CHILD APPLICATIONS:
+child_layout = ct.Layout(rows=3)
+child_layout.add_widget(row=0, content='output-0')
+child_layout.add_widget(row=1, content='output-1')
+child_layout.add_widget(row=2, content='output-2')
+@ct.child(title='', layout=child_layout)
+@ct.output.livefigure()
+@ct.output.carousel()
+@ct.output.markdown()
+def child(params, **kwargs):
+
+    figure1 = figure2 = ct.output.NULL_RESULT
+    variable_cdm = kwargs.get('variable_cdm')
+    anom_data = kwargs.get('anom_data')
+    event_dict = kwargs.get('event_dict')
+    units = kwargs.get('units')
+    credits = kwargs.get('credits')
+    caption = kwargs.get('caption')
+    yearmonthst = kwargs.get('yearmonthst')
+    yearmonth = kwargs.get('yearmonth')
+
+    if params['geometry']['type'] in ['Polygon', 'MultiPolygon']:
+        region = params['properties']['name']
+        credits = credits.replace('Global', region)
+        caption = caption.replace('.', f', from {yearmonthst} to {yearmonth}.')
+    elif params['geometry']['type'] == 'Point':
+        variable = kwargs.get('variable')
+        for i in range(0, len(event_dict['Volcanic eruption']['name'])):
+            if params['properties']['name'].split('(')[0].strip() in event_dict['Volcanic eruption']['name'][i]:
+                start = (event_dict['Volcanic eruption']['x'][i]).split(', ')
+                start = start[0].split('-')
+                end = params['properties']['name'].split('(')[-1].split(',')[-1].split(')')[0].strip()
+                end = end.split('-')
+
+
+    ########################
+    if params['geometry']['type'] in ['Polygon', 'MultiPolygon']:
+        result = make_region_data(anom_data, aggregation, region, map_region_to_id(region), map_usage(region), variable_cdm)
+        anom_to_plot = {'monthly_mean': result['data']}
+
+        for s in STATLIST:
+            st = map_statistics_to_key(s)
+            stat_data = make_stats_weighted(result['data'], st, variable_cdm, yearmonth, yearmonthst)
+            anom_to_plot[st] = stat_data
+
+        ymin = get_event_y(ct.cdm.get_values(ct.cube.min(result['data']))['values'][0])
+        event_dict['Volcanic eruption']['y'] = [ymin] * len(event_dict['Volcanic eruption']['y'])
+
+        figure1 = make_line_plot(units, anom_to_plot, 'Anomalies', result['step_1'], region, event_dict, (int(yearmonthst.split(' ')[1]), int(yearmonth.split(' ')[1]))  )
+
+    ########################
+    elif params['geometry']['type'] == 'Point':
+
+        point = {
+            'input_latitude_values': [float(params['geometry']['coordinates'][1])],
+            'input_longitude_values': [float(params['geometry']['coordinates'][0])],
+            'input_type': 'geographical'
+            }
+
+        te = datetime.date(int(end[0]), int(end[1]), int(end[2]))
+        ts = datetime.date(int(start[0]), int(start[1]), int(start[2]))
+        nmonths_list = make_nmonths_list(ts, te, start[2], yearmonth)
+        mins = []
+        maxs = []
+        maps_data = {}
+        for m in nmonths_list:
+            te = ts + relativedelta(months=m-1)
+            maps_data[m] = ct.cube.average(ct.cube.select(anom_data, time=[ts.strftime('%Y-%m'), te.strftime('%Y-%m')]), dim='time')
+            mins.append(round(ct.cdm.get_values(ct.cube.min(maps_data[m]))['values'][0], 2))
+            maxs.append(round(ct.cdm.get_values(ct.cube.max(maps_data[m]))['values'][0], 2))
+
+        colour_list, levels = calculate_levels(mins, maxs, variable)
+        MAP_CONFIG['contour']['contour_shade_colour_list'] = colour_list
+        MAP_CONFIG['contour']['contour_level_list'] = levels
+        MAP_CONFIG['legend']['legend_label_frequency'] = 1
+
+        figs = []
+        for m in nmonths_list:
+            te = ts + relativedelta(months=m-1)
+            title = f'{m} months after the eruption'
+            legend = RETRIEVE_REQUESTS[variable]["title"]
+            MAP_CONFIG['title'] = title
+            MAP_CONFIG['legend_title'] = legend
+            fig =  ct.map.plot(maps_data[m], **MAP_CONFIG, symbol_input_data=point, symbol_config=SYMBOL_CONFIG, extent='dynamic')
+            figs.append(fig)
+        figure2 = ct.cdsplot.carousel(figs)
+
+    return   figure1, figure2, caption + credits
+
+##################################################################
+# PARENT APPLICATION
+
+layout = ct.Layout(rows=1)
+input_layout = ct.Layout(rows=3)
+input_layout.add_widget(row=0, content='output-0')
+input_layout.add_widget(row=1, content='variable')
+input_layout.add_widget(row=1, content='regions')
+input_layout.add_widget(row=2, content='output-1')
+layout.add_widget(row=0, content=input_layout, sm=4)
+layout.add_widget(row=0, content='[child]', sm=8, height='70vh')
+
+@ct.application(layout=layout)
+@ct.output.markdown()
+@ct.input.dropdown('variable', label='Variable', values=VARIABLELIST, default=VARIABLE_DEFAULT)
+@ct.input.dropdown('regions', values=REGIONS, label='Regions/Volcanoes', default=REGION_DEFAULT)
+@ct.output.livemap(click_on_feature=child, height=40)
+
+def application(variable, regions, cache_child=None):
+
+    # get start and end period for a dataset
+    rules = RETRIEVE_REQUESTS[variable]["rules"]
+    ymst = ymen = []
+    for rule in rules:
+        ymst.append(rule["yearmonthst"])
+        ymen.append(rule["yearmonth"])
+    yearmonthst = ymst[0]
+    yearmonth = ymst[-1]
+    clim1 = datetime.datetime.strptime(ymst[0], '%b %Y').year + 1
+    if datetime.datetime.strptime(ymen[-1], '%b %Y').month == '12':
+        clim2 = datetime.datetime.strptime(ymen[-1], '%b %Y').year
+    else:
+        clim2 = datetime.datetime.strptime(ymen[-1], '%b %Y').year - 1
+    climref = str(clim1) + '-' + str(clim2)
+
+    ##################
+    # prepare gridded anomalies
+    ##################
+    data = prepare_app_data(variable)
+    anom_data = calculate_anomaly(data, tuple(climref.split("-")))
+
+    ##################
+    # prepare significant events
+    ##################
+    event_dict = get_events(yearmonthst, yearmonth, ymin=0.0)
+
+    ##################
+    # credits
+    ##################
+    caption = (f'Global {variable} averaged anomalies relative to the {climref} average. ')
+    credits = (f'Data source: {RETRIEVE_REQUESTS[variable]["source"]}. Credit: Copernicus Climate Change Service/ECMWF.')
+
+    click_kwargs = {'variable_cdm': RETRIEVE_REQUESTS[variable]["rules"][0]["request"]["variable"],
+                    'variable': variable,
+                    'units': (RETRIEVE_REQUESTS[variable]["title"]).split("(")[1].split(")")[0],
+                    'anom_data': anom_data,
+                    'event_dict': event_dict,
+                    'credits': credits,
+                    'caption': caption,
+                    'yearmonthst': yearmonthst,
+                    'yearmonth': yearmonth
+                   }
+
+    layers = {
+        'Geographical zones': geographical_zones(click_kwargs),
+        'Whole globe': whole_globe(click_kwargs),
+        'Volcanic eruptions': volcanic_eruptions(click_kwargs),
+    }[regions]
+
+    kwargs = {
+        'Geographical zones': {
+            'max_zoom': 0, 'zoom': 0, 'view': 'global',
+            'click_foreground_layer': True,
+        },
+        'Whole globe': {
+            'max_zoom': 0, 'zoom': 0, 'view': 'global',
+            'click_foreground_layer': True,
+        },
+        'Volcanic eruptions': {'zoom': 0, 'view': 'global'},
+    }[regions]
+
+    fig = ct.livemap.plot(
+        layers,
+        lat = 0, lon = 0,
+        canvas=True,
+        **kwargs
+    )
+    fig['min_zoom'] = 0
+
+    return MAIN_MARKDOWN, fig
+
+def zones_to_layers(zones, colors, click_kwargs):
+    layers = []
+    for i, zone in enumerate(zones):
+        layers.append(
+            {
+                'data': zone,
+                'click_kwargs': click_kwargs,
+                'style': {
+                    'fillColor': colors[i],
+                },
+                'style_selected':{
+                    'fillColor': colors[i],
+                    'fillOpacity': 0.6,
+                },
+            }
+        )
+    return layers
+
+
+def whole_globe(click_kwargs):
+    lons = [-360, -360, 360, 360, -360]
+    lats = [-180, 180, 180, -180, -180]
+    zones = [
+        ct.shapes.polygon(lons, lats, sublabel='Whole globe'),
+        ct.shapes.union(ct.shapes.catalogue.land()),
+    ]
+
+    colors = ['#31658D', '#5FC960']
+    layers = zones_to_layers(zones, colors, click_kwargs)
+    layers[-1]['label'] = 'All land'
+    return layers
+
+def geographical_zones(click_kwargs):
+    lons = [-360, -360, 360, 360, -360]
+    lats = lambda x, y: [x, y, y, x, x]
+    zones = [
+        ct.shapes.polygon(lons, lats(60, 90), sublabel='Arctic'),
+        ct.shapes.polygon(lons, lats(30, 60), sublabel='Northern mid-latitudes'),
+        ct.shapes.polygon(lons, lats(-30, 30), sublabel='Equatorial region'),
+        ct.shapes.polygon(lons, lats(-60, -30), sublabel='Southern mid-latitudes'),
+        ct.shapes.polygon(lons, lats(-90, -60), sublabel='Antarctic'),
+    ]
+
+    colors = ['#300495', '#AE2791', '#F58B46', '#AE2791', '#300495']
+    layers = zones_to_layers(zones, colors, click_kwargs)
+
+    return layers
+
+def volcanic_eruptions(click_kwargs):
+    events = click_kwargs['event_dict']
+    lons = events['Volcanic eruption']['longitude']
+    lats = events['Volcanic eruption']['latitude']
+    names = events['Volcanic eruption']['name']
+
+    labels = []
+    for i, (lon, lat) in enumerate(zip(lons, lats)):
+        dates = events['Volcanic eruption']['label'][i].split("<br />")[2]
+        dates = " (" + dates.replace(' - ', ', ') + ")"
+        labels.append(names[i] + dates)
+
+    bubbles = []
+    bubbles = ct.shapes.markers(
+        lons, lats,
+        labels = labels,
+        radius = 5,
+        style = {
+            "color": '#ff0000',
+            "weight": 2,
+            "fillColor": '#ffdddd',
+            "fillOpacity": 1,
+            "opacity": 1,
+        }
+    )
+    layer = {
+            "data": bubbles,
+            "multi_select": False,
+            "checked": True,
+            "click_kwargs": click_kwargs,
+        }
+
+    return layer
