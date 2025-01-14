@@ -1,0 +1,34 @@
+from pystac_client import Client
+import planetary_computer as pc
+
+# Search against the Planetary Computer STAC API
+catalog = Client.open(
+  "https://planetarycomputer.microsoft.com/api/stac/v1"
+)
+
+# Define your area of interest
+aoi = {
+  "type": "Polygon",
+  "coordinates": [
+    [
+      [36.617902297272366, -1.1028434753156517],
+      [37.62624395453031, -1.1028434753156517],
+      [37.62624395453031, -0.5333838409230935],
+      [36.617902297272366, -0.5333838409230935],
+      [36.617902297272366, -1.1028434753156517]
+    ]
+  ]
+}
+
+# Define your search with CQL2 syntax
+search = catalog.search(filter_lang="cql2-json", filter={
+  "op": "and",
+  "args": [
+    {"op": "s_intersects", "args": [{"property": "geometry"}, aoi]},
+    {"op": "=", "args": [{"property": "collection"}, "ms-buildings"]}
+  ]
+})
+
+# Grab the first item from the search results and sign the assets
+first_item = next(search.get_items())
+pc.sign_item(first_item).assets
