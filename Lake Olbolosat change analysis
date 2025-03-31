@@ -1,0 +1,132 @@
+// Load the dataset for Lake Ol' Bolossat
+var dataset = ee.ImageCollection('JRC/GSW1_4/YearlyHistory')
+                .filterBounds(ee.Geometry.Point([36.43, -0.15]));
+
+// Visualization parameters
+var visualization = {
+  bands: ['waterClass'],
+  min: 0.0,
+  max: 3.0,
+  palette: ['cccccc', 'ffffff', '99d9ea', '0000ff']
+};
+
+// Define the region of interest for Lake Ol' Bolossat
+var lakeOlBolosat = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
+
+// Set up years to display (1984 to 2022)
+var startYear = 1984;
+var endYear = 2022;
+var currentYear = startYear;
+
+// Function to update the map layer based on the selected year
+function updateMap(year) {
+  Map.layers().reset(); // Clear all layers
+  var image = dataset.filter(ee.Filter.calendarRange(year, year, 'year')).first();
+  
+  if (image) {
+    Map.addLayer(image.clip(lakeOlBolosat), visualization, 'Lake OlBolossat ' + year);
+  } else {
+    print('No image available for year: ' + year);
+  }
+}
+
+// UI Components for the time player - TITLE MADE BOLD HERE
+var titleLabel = ui.Label({
+  value: "Lake Ol' Bolossat Water Coverage Analysis",
+  style: {fontWeight: 'bold', fontSize: '18px'}
+});
+var subtitleLabel = ui.Label("(Autoplay - Select Year)");
+
+var timeSlider = ui.DateSlider({
+  start: '1984-01-01',
+  end: '2022-12-31',
+  value: '1984-01-01',
+  period: 365,
+  onChange: function(dateRange) {
+    var year = ee.Date(dateRange.start()).get('year').getInfo();
+    currentYear = year;
+    updateMap(year);
+  },
+  style: {position: 'bottom-left', width: '300px'}
+});
+
+Map.add(ui.Panel([titleLabel, subtitleLabel, timeSlider]));
+
+// Create the legend
+var legendTitle = ui.Label('Water Coverage', {
+  fontWeight: 'bold',
+  fontSize: '16px'
+});
+
+var legend = ui.Panel({
+  widgets: [legendTitle],
+  style: {position: 'bottom-right', padding: '8px'}
+});
+
+var palette = ['cccccc', 'ff0000', '99d9ea', '0000ff'];
+var names = ['No data', 'Not water', 'Seasonal water', 'Permanent water'];
+
+palette.forEach(function(color, index) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '2px',
+      width: '20px',
+      height: '20px'
+    }
+  });
+
+  var description = ui.Label({
+    value: names[index],
+    style: {padding: '8px'}
+  });
+
+  legend.add(ui.Panel({
+    widgets: [colorBox, description],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  }));
+});
+
+Map.add(legend);
+
+// Generate a bar chart for water extent over the years
+var yearlyWaterArea = dataset.map(function(img) {
+  var year = ee.Date(img.get('system:time_start')).get('year');
+  var waterArea = img.clip(lakeOlBolosat).eq(2).multiply(ee.Image.pixelArea()).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: lakeOlBolosat,
+    scale: 30,
+    maxPixels: 1e13
+  }).get('waterClass');
+  return ee.Feature(null, {'year': year, 'waterArea': waterArea});
+});
+
+var waterExtentChart = ui.Chart.feature.byFeature({
+  features: yearlyWaterArea,
+  xProperty: 'year',
+  yProperties: ['waterArea']
+}).setOptions({
+  title: "Lake Ol' Bolossat Water Extent Over the Years",
+  vAxis: {title: 'Water Area (sq. km)'},
+  hAxis: {title: 'Year'},
+  colors: ['blue']
+});
+
+var chartPanel = ui.Panel({
+  widgets: [waterExtentChart],
+  style: {position: 'bottom-left', width: '350px', padding: '8px'}
+});
+Map.add(chartPanel);
+
+// Autoplay function
+function autoplay() {
+  timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
+  currentYear++;
+  if (currentYear > endYear) {
+    currentYear = startYear; // Loop back to start year
+  }
+}
+
+// Start autoplay with an interval of 10 seconds
+ui.util.setInterval(autoplay, 10000);
