@@ -1,23 +1,23 @@
 // ==============================================
-// PART 1: OPTICAL WATER DETECTION (Existing JRC)
+// PART 1: OPTICAL WATER DETECTION (JRC Dataset)
 // ==============================================
 var jrcDataset = ee.ImageCollection('JRC/GSW1_4/YearlyHistory')
                   .filterBounds(ee.Geometry.Point([36.43, -0.15]));
 
 // ==============================================
-// PART 2: SAR WATER DETECTION (Sentinel-1 with Fixes)
+// PART 2: SAR WATER DETECTION (Sentinel-1)
 // ==============================================
 var sarCollection = ee.ImageCollection('COPERNICUS/S1_GRD')
                    .filterBounds(ee.Geometry.Point([36.43, -0.15]))
                    .filter(ee.Filter.eq('instrumentMode', 'IW'))
-                   .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) // Ensure 'VV' exists
+                   .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
                    .map(function(image) {
                       return image.select(['VV']).copyProperties(image, ['system:time_start']);
                    });
 
-// Function to detect water using SAR
+// SAR Water Detection Function
 function calculateSARWater(image) {
-  var filtered = image.focal_mean(50, 'circle', 'meters'); // Reduce speckle noise
+  var filtered = image.focal_mean(50, 'circle', 'meters'); // Reduce noise
   var water = filtered.lt(-16); // Water threshold
   return water.rename('water').set('system:time_start', image.get('system:time_start'));
 }
@@ -36,7 +36,7 @@ var s2 = ee.ImageCollection('COPERNICUS/S2_SR')
           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
           .map(function(image) { 
             return image.select(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 
-                                 'B8', 'B8A', 'B9', 'B11', 'B12']); // Ensure uniform bands
+                                 'B8', 'B8A', 'B9', 'B11', 'B12']); 
           })
           .median();
 
@@ -67,11 +67,7 @@ var classNames = [
 ];
 
 var habitatPalette = [
-  '#1E90FF',
-  '#228B22',
-  '#ADFF2F',
-  '#8B4513',
-  '#FF4500'
+  '#1E90FF', '#228B22', '#ADFF2F', '#8B4513', '#FF4500'
 ];
 
 // ==============================================
@@ -82,6 +78,7 @@ var lakeOlBolosat = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
 var startYear = 2014;
 var endYear = 2021; // Adjusted to exclude 2022 & 2023
 var currentYear = startYear;
+var autoplayPaused = false; // Flag to control autoplay
 
 var timeSlider = ui.DateSlider({
   start: startYear + '-01-01',
@@ -96,55 +93,41 @@ var timeSlider = ui.DateSlider({
   style: {width: '300px'}
 });
 
-var jrcVis = {
-  min: 0.0,
-  max: 3.0,
-  palette: ['cccccc', 'ffffff', '99d9ea', '0000ff']
-};
-
-var sarVis = {
-  min: 0,
-  max: 1,
-  palette: ['000000', '0000ff']
-};
+var jrcVis = {min: 0.0, max: 3.0, palette: ['cccccc', 'ffffff', '99d9ea', '0000ff']};
+var sarVis = {min: 0, max: 1, palette: ['000000', '0000ff']};
 
 function updateMap(year) {
   Map.layers().reset();
   
   var jrcImg = jrcDataset.filter(ee.Filter.calendarRange(year, year, 'year')).first();
-  if (jrcImg) {
-    Map.addLayer(jrcImg.clip(lakeOlBolosat), jrcVis, 'JRC Water ' + year);
-  }
+  if (jrcImg) Map.addLayer(jrcImg.clip(lakeOlBolosat), jrcVis, 'JRC Water ' + year);
   
   var sarImg = sarWater.filter(ee.Filter.calendarRange(year, year, 'year')).mean();
-  if (sarImg) {
-    Map.addLayer(sarImg.clip(lakeOlBolosat), sarVis, 'SAR Water ' + year, false);
-  }
+  if (sarImg) Map.addLayer(sarImg.clip(lakeOlBolosat), sarVis, 'SAR Water ' + year, false);
   
   if (jrcImg && sarImg) {
     var agreement = jrcImg.eq(3).and(sarImg.eq(1));
     Map.addLayer(agreement.clip(lakeOlBolosat), {palette: ['00ff00']}, 'Agreement', false);
   }
+
+  var habitatLayer = Map.addLayer(habitatMap.clip(roi), {min: 0, max: 4, palette: habitatPalette}, 'Habitat Map', false);
   
-  Map.addLayer(habitatMap.clip(roi), {min: 0, max: 4, palette: habitatPalette}, 'Habitat Map', false);
+  habitatLayer.onChange(function(visibility) {
+    autoplayPaused = visibility; // Pause autoplay when habitat map is active
+  });
 }
 
 // ZOOM TO ROI BUTTON
-// ==============================================
 var zoomButton = ui.Button({
   label: 'Zoom to ROI',
-  onClick: function() {
-    Map.centerObject(roi, 12);
-  }
+  onClick: function() { Map.centerObject(roi, 12); }
 });
 Map.add(zoomButton);
 
 // ==============================================
 // LEGEND
 // ==============================================
-var legend = ui.Panel({
-  style: {position: 'bottom-right', padding: '8px'}
-});
+var legend = ui.Panel({ style: {position: 'bottom-right', padding: '8px'} });
 legend.add(ui.Label('Water & Habitat Classification', {fontWeight: 'bold'}));
 
 var legendItems = [
@@ -156,7 +139,7 @@ var legendItems = [
 ];
 
 legendItems.forEach(function(item) {
-  var colorBox = ui.Label({style: {backgroundColor: item.color, padding: '8px', width: '20px', height: '20px'}})
+  var colorBox = ui.Label({style: {backgroundColor: item.color, padding: '8px', width: '20px', height: '20px'}});
   var description = ui.Label({value: item.label, style: {padding: '8px'}});
   legend.add(ui.Panel({widgets: [colorBox, description], layout: ui.Panel.Layout.Flow('horizontal')}));
 });
@@ -167,10 +150,10 @@ Map.add(legend);
 // AUTOPLAY FUNCTION
 // ==============================================
 function autoplay() {
-  timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
-  currentYear++;
-  if (currentYear > endYear) {
-    currentYear = startYear;
+  if (!autoplayPaused) {
+    timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
+    currentYear++;
+    if (currentYear > endYear) currentYear = startYear;
   }
 }
 ui.util.setInterval(autoplay, 10000);
