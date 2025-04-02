@@ -78,7 +78,6 @@ var lakeOlBolosat = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
 var startYear = 2014;
 var endYear = 2021; // Adjusted to exclude 2022 & 2023
 var currentYear = startYear;
-var autoplayPaused = false; // Flag to control autoplay
 
 var timeSlider = ui.DateSlider({
   start: startYear + '-01-01',
@@ -110,22 +109,27 @@ function updateMap(year) {
     Map.addLayer(agreement.clip(lakeOlBolosat), {palette: ['00ff00']}, 'Agreement', false);
   }
 
-  var habitatLayer = Map.addLayer(habitatMap.clip(roi), {min: 0, max: 4, palette: habitatPalette}, 'Habitat Map', false);
-  
-  habitatLayer.onChange(function(visibility) {
-    autoplayPaused = visibility; // Pause autoplay when habitat map is active
-  });
+  Map.addLayer(habitatMap.clip(roi), {min: 0, max: 4, palette: habitatPalette}, 'Habitat Map', false);
 }
 
-// ZOOM TO ROI BUTTON
-var zoomButton = ui.Button({
-  label: 'Zoom to ROI',
-  onClick: function() { Map.centerObject(roi, 12); }
-});
-Map.add(zoomButton);
+// ✅ Function to check if Habitat Map is active
+function isHabitatMapActive() {
+  return Map.layers().get(3).getShown();
+}
+
+// ✅ Updated Autoplay Function with Habitat Check
+function autoplay() {
+  if (!isHabitatMapActive()) { 
+    timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
+    currentYear++;
+    if (currentYear > endYear) currentYear = startYear;
+  }
+}
+
+ui.util.setInterval(autoplay, 10000);
 
 // ==============================================
-// LEGEND
+// LEGEND (WATER + HABITAT CLASSIFICATION)
 // ==============================================
 var legend = ui.Panel({ style: {position: 'bottom-right', padding: '8px'} });
 legend.add(ui.Label('Water & Habitat Classification', {fontWeight: 'bold'}));
@@ -138,6 +142,11 @@ var legendItems = [
   {color: '00ff00', label: 'Agreement (JRC & SAR)'}
 ];
 
+// Habitat classification legend
+for (var i = 0; i < classNames.length; i++) {
+  legendItems.push({ color: habitatPalette[i], label: classNames[i] });
+}
+
 legendItems.forEach(function(item) {
   var colorBox = ui.Label({style: {backgroundColor: item.color, padding: '8px', width: '20px', height: '20px'}});
   var description = ui.Label({value: item.label, style: {padding: '8px'}});
@@ -145,18 +154,6 @@ legendItems.forEach(function(item) {
 });
 
 Map.add(legend);
-
-// ==============================================
-// AUTOPLAY FUNCTION
-// ==============================================
-function autoplay() {
-  if (!autoplayPaused) {
-    timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
-    currentYear++;
-    if (currentYear > endYear) currentYear = startYear;
-  }
-}
-ui.util.setInterval(autoplay, 10000);
 
 // ==============================================
 // USER INTERFACE
