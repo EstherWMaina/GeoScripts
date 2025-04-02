@@ -15,29 +15,25 @@ var sarCollection = ee.ImageCollection('COPERNICUS/S1_GRD')
                       return image.select(['VV']).copyProperties(image, ['system:time_start']);
                    });
 
-// SAR Water Detection Function
 function calculateSARWater(image) {
   var filtered = image.focal_mean(50, 'circle', 'meters'); // Reduce noise
   var water = filtered.lt(-16); // Water threshold
   return water.rename('water').set('system:time_start', image.get('system:time_start'));
 }
 
-// Process SAR dataset
 var sarWater = sarCollection.map(calculateSARWater);
 
 // ==============================================
 // PART 3: HABITAT CLASSIFICATION
 // ==============================================
-var roi = ee.Geometry.Point([36.38, -0.12]).buffer(5000); // 5km buffer
+var roi = ee.Geometry.Polygon([
+  [[36.3537, 0.0118], [36.3537, -0.2299], [36.5123, -0.2299], [36.5123, 0.0118]]
+]);
 
 var s2 = ee.ImageCollection('COPERNICUS/S2_SR')
           .filterBounds(roi)
-          .filterDate('2021-01-01', '2021-12-31') // Removed 2022 & 2023
+          .filterDate('2021-01-01', '2021-12-31')
           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
-          .map(function(image) { 
-            return image.select(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 
-                                 'B8', 'B8A', 'B9', 'B11', 'B12']); 
-          })
           .median();
 
 var ndvi = s2.normalizedDifference(['B8', 'B4']).rename('NDVI');
@@ -49,50 +45,29 @@ var habitatBands = s2.select(['B4', 'B3', 'B2'])
   .addBands(mndwi)
   .addBands(ndbi);
 
-var training = habitatBands.sample({
-  region: roi,
-  scale: 10,
-  numPixels: 5000
-});
-
+var training = habitatBands.sample({region: roi, scale: 10, numPixels: 5000});
 var clusterer = ee.Clusterer.wekaKMeans(5).train(training);
 var habitatMap = habitatBands.cluster(clusterer);
 
-var classNames = [
-  'Open Water',
-  'Wetlands (Emergent Vegetation)',
-  'Grassland/Floodplain',
-  'Riparian Woodland',
-  'Agricultural/Built-up'
-];
-
-var habitatPalette = [
-  '#1E90FF', '#228B22', '#ADFF2F', '#8B4513', '#FF4500'
-];
+var classNames = ['Open Water', 'Wetlands', 'Grassland', 'Riparian Woodland', 'Built-up'];
+var habitatPalette = ['#1E90FF', '#228B22', '#ADFF2F', '#8B4513', '#FF4500'];
 
 // ==============================================
 // VISUALIZATION & UI COMPONENTS
 // ==============================================
 var lakeOlBolosat = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
 
-var startYear = 2014;
-var endYear = 2021; // Adjusted to exclude 2022 & 2023
-var currentYear = startYear;
-
+var startYear = 2014, endYear = 2021, currentYear = startYear;
 var timeSlider = ui.DateSlider({
-  start: startYear + '-01-01',
-  end: endYear + '-12-31',
-  value: startYear + '-01-01',
-  period: 365,
+  start: startYear + '-01-01', end: endYear + '-12-31', value: startYear + '-01-01',
+  period: 365, style: {width: '300px'},
   onChange: function(dateRange) {
-    var year = ee.Date(dateRange.start()).get('year').getInfo();
-    currentYear = year;
-    updateMap(year);
-  },
-  style: {width: '300px'}
+    currentYear = ee.Date(dateRange.start()).get('year').getInfo();
+    updateMap(currentYear);
+  }
 });
 
-var jrcVis = {min: 0.0, max: 3.0, palette: ['cccccc', 'ffffff', '99d9ea', '0000ff']};
+var jrcVis = {min: 0, max: 3, palette: ['cccccc', 'ffffff', '99d9ea', '0000ff']};
 var sarVis = {min: 0, max: 1, palette: ['000000', '0000ff']};
 
 function updateMap(year) {
@@ -109,20 +84,30 @@ function updateMap(year) {
     Map.addLayer(agreement.clip(lakeOlBolosat), {palette: ['00ff00']}, 'Agreement', false);
   }
 
-  Map.addLayer(habitatMap.clip(roi), {min: 0, max: 4, palette: habitatPalette}, 'Habitat Map', false);
+  var habitatLayer = Map.addLayer(habitatMap.clip(roi), {min: 0, max: 4, palette: habitatPalette}, 'Habitat Map', false);
+  return habitatLayer;
 }
 
 // ✅ Function to check if Habitat Map is active
 function isHabitatMapActive() {
-  return Map.layers().get(3).getShown();
+  var layers = Map.layers();
+  for (var i = 0; i < layers.length(); i++) {
+    if (layers.get(i).getName() === 'Habitat Map' && layers.get(i).getShown()) {
+      return true;
+    }
+  }
+  return false;
 }
 
-// ✅ Updated Autoplay Function with Habitat Check
+// ✅ Updated Autoplay Function with Habitat Check & Auto-Zoom to ROI
 function autoplay() {
   if (!isHabitatMapActive()) { 
     timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
     currentYear++;
-    if (currentYear > endYear) currentYear = startYear;
+    if (currentYear > endYear) {
+      currentYear = startYear;
+      Map.centerObject(roi, 12); // Auto-zoom back to ROI after loop
+    }
   }
 }
 
@@ -142,10 +127,9 @@ var legendItems = [
   {color: '00ff00', label: 'Agreement (JRC & SAR)'}
 ];
 
-// Habitat classification legend
-for (var i = 0; i < classNames.length; i++) {
-  legendItems.push({ color: habitatPalette[i], label: classNames[i] });
-}
+classNames.forEach(function(name, i) {
+  legendItems.push({ color: habitatPalette[i], label: name });
+});
 
 legendItems.forEach(function(item) {
   var colorBox = ui.Label({style: {backgroundColor: item.color, padding: '8px', width: '20px', height: '20px'}});
@@ -156,7 +140,7 @@ legendItems.forEach(function(item) {
 Map.add(legend);
 
 // ==============================================
-// USER INTERFACE
+// USER INTERFACE & ROI ZOOM
 // ==============================================
 var titleLabel = ui.Label({
   value: "Lake Ol' Bolossat Water & Habitat Monitoring",
@@ -170,3 +154,12 @@ var panel = ui.Panel({
 
 Map.add(panel);
 updateMap(startYear);
+
+// ✅ Zoom to ROI Button
+var zoomButton = ui.Button({
+  label: 'Zoom to ROI',
+  onClick: function() {
+    Map.centerObject(roi, 12);
+  }
+});
+Map.add(zoomButton);
