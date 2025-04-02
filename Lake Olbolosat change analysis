@@ -15,14 +15,12 @@ var sarCollection = ee.ImageCollection('COPERNICUS/S1_GRD')
                       return image.select(['VV']).copyProperties(image, ['system:time_start']);
                    });
 
-// SAR Water Detection Function
 function calculateSARWater(image) {
-  var filtered = image.focal_mean(50, 'circle', 'meters'); // Reduce noise
-  var water = filtered.lt(-16); // Water threshold
+  var filtered = image.focal_mean(50, 'circle', 'meters'); 
+  var water = filtered.lt(-16); 
   return water.rename('SAR_Water').set('system:time_start', image.get('system:time_start'));
 }
 
-// Process SAR dataset
 var sarWater = sarCollection.map(calculateSARWater);
 
 // ==============================================
@@ -32,73 +30,72 @@ var roi = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
 
 var s2 = ee.ImageCollection('COPERNICUS/S2_SR')
           .filterBounds(roi)
-          .filterDate('2021-01-01', '2021-12-31') // Excluding 2022 & 2023
+          .filterDate('2021-01-01', '2021-12-31')
           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
           .map(function(image) { 
             return image.select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']); 
           })
           .median();
 
-// AWEI Calculation Function
+// AWEI Calculation
 function calculateAWEI(image) {
   var aweiSh = image.expression(
     'B3 + 2.5 * B8 - 1.5 * (B11 + B12) - 0.25 * B2',
-    {
-      'B2': image.select('B2'),
-      'B3': image.select('B3'),
-      'B8': image.select('B8'),
-      'B11': image.select('B11'),
-      'B12': image.select('B12')
-    }
+    {'B2': image.select('B2'),'B3': image.select('B3'),'B8': image.select('B8'),
+     'B11': image.select('B11'),'B12': image.select('B12')}
   ).rename('AWEIsh');
 
   return image.addBands(aweiSh);
 }
 
-// Apply AWEI to Sentinel-2 dataset
 var s2WithAWEI = calculateAWEI(s2);
-
-// Extract Water from AWEI (values > 0 indicate water)
 var aweiWater = s2WithAWEI.select('AWEIsh').gt(0).rename('AWEI_Water');
 
+// Habitat Classification
+var ndvi = s2.normalizedDifference(['B8', 'B4']).rename('NDVI');
+var habitatBands = s2.select(['B4', 'B3', 'B2']).addBands(ndvi);
+var training = habitatBands.sample({region: roi, scale: 10, numPixels: 5000});
+var clusterer = ee.Clusterer.wekaKMeans(5).train(training);
+var habitatMap = habitatBands.cluster(clusterer);
+
+var classNames = ['Open Water','Wetlands','Grassland','Riparian Woodland','Agricultural/Built-up'];
+var habitatPalette = ['#1E90FF','#228B22','#ADFF2F','#8B4513','#FF4500'];
+
 // ==============================================
-// PART 4: FUSION WATER MAP (Combining JRC, SAR, AWEI)
+// PART 4: FUSION WATER MAP
 // ==============================================
 function fusionWaterMap(year) {
   var jrcImg = jrcDataset.filter(ee.Filter.calendarRange(year, year, 'year')).first();
   var sarImg = sarWater.filter(ee.Filter.calendarRange(year, year, 'year')).mean();
   
-  // Fusion: Water detected by either JRC, SAR, or AWEI
   var fusion = ee.Image(0)
-    .where(jrcImg.eq(3), 1)  // JRC detects water
-    .where(sarImg.eq(1), 1)  // SAR detects water
-    .where(aweiWater.eq(1), 1) // AWEI detects water
+    .where(jrcImg.eq(3), 1)  
+    .where(sarImg.eq(1), 1)  
+    .where(aweiWater.eq(1), 1) 
     .rename('Fusion_Water');
 
   return fusion;
 }
 
 // ==============================================
-// VISUALIZATION SETTINGS
+// VISUALIZATION & UI COMPONENTS
 // ==============================================
 var waterPalette = {min: 0, max: 1, palette: ['black', 'blue']};
+var habitatVis = {min: 0, max: 4, palette: habitatPalette};
 
-// ==============================================
-// UI COMPONENTS
-// ==============================================
 var timeSlider = ui.DateSlider({
   start: 2014 + '-01-01',
-  end: 2021 + '-12-31', // Adjusted to exclude 2022 & 2023
+  end: 2021 + '-12-31',
   value: 2014 + '-01-01',
   period: 365,
   onChange: function(dateRange) {
     var year = ee.Date(dateRange.start()).get('year').getInfo();
     updateMap(year);
+    autoplayPaused = true; 
   },
   style: {width: '300px'}
 });
 
-// Function to update map layers
 function updateMap(year) {
   Map.layers().reset();
   
@@ -112,19 +109,27 @@ function updateMap(year) {
   
   var fusion = fusionWaterMap(year);
   Map.addLayer(fusion.clip(roi), {min: 0, max: 1, palette: ['black', 'cyan']}, 'Fusion Water', true);
+
+  Map.addLayer(habitatMap.clip(roi), habitatVis, 'Habitat Map', false);
 }
 
-// AutoPlay Function
+// ==============================================
+// AUTO PLAY LOGIC
+// ==============================================
 var currentYear = 2014;
+var autoplayPaused = false;
+
 function autoplay() {
-  timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
-  currentYear++;
-  if (currentYear > 2021) currentYear = 2014;
+  if (!autoplayPaused) {
+    timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
+    currentYear++;
+    if (currentYear > 2021) currentYear = 2014;
+  }
 }
 ui.util.setInterval(autoplay, 10000);
 
 // ==============================================
-// LEGEND (Water + Habitat Classification)
+// LEGEND
 // ==============================================
 var legend = ui.Panel({ style: {position: 'bottom-right', padding: '8px'} });
 legend.add(ui.Label('Water & Habitat Classification', {fontWeight: 'bold'}));
@@ -134,6 +139,10 @@ var legendItems = [
   {color: 'blue', label: 'Detected Water'},
   {color: 'cyan', label: 'Fusion Water'}
 ];
+
+for (var i = 0; i < classNames.length; i++) {
+  legendItems.push({ color: habitatPalette[i], label: classNames[i] });
+}
 
 legendItems.forEach(function(item) {
   var colorBox = ui.Label({style: {backgroundColor: item.color, padding: '8px', width: '20px', height: '20px'}});
