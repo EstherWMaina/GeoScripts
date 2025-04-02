@@ -15,121 +15,125 @@ var sarCollection = ee.ImageCollection('COPERNICUS/S1_GRD')
                       return image.select(['VV']).copyProperties(image, ['system:time_start']);
                    });
 
+// SAR Water Detection Function
 function calculateSARWater(image) {
   var filtered = image.focal_mean(50, 'circle', 'meters'); // Reduce noise
   var water = filtered.lt(-16); // Water threshold
-  return water.rename('water').set('system:time_start', image.get('system:time_start'));
+  return water.rename('SAR_Water').set('system:time_start', image.get('system:time_start'));
 }
 
+// Process SAR dataset
 var sarWater = sarCollection.map(calculateSARWater);
 
 // ==============================================
 // PART 3: HABITAT CLASSIFICATION
 // ==============================================
-var roi = ee.Geometry.Polygon([
-  [[36.3537, 0.0118], [36.3537, -0.2299], [36.5123, -0.2299], [36.5123, 0.0118]]
-]);
+var roi = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
 
 var s2 = ee.ImageCollection('COPERNICUS/S2_SR')
           .filterBounds(roi)
-          .filterDate('2021-01-01', '2021-12-31')
+          .filterDate('2021-01-01', '2021-12-31') // Excluding 2022 & 2023
           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+          .map(function(image) { 
+            return image.select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']); 
+          })
           .median();
 
-var ndvi = s2.normalizedDifference(['B8', 'B4']).rename('NDVI');
-var mndwi = s2.normalizedDifference(['B3', 'B11']).rename('MNDWI');
-var ndbi = s2.normalizedDifference(['B11', 'B8']).rename('NDBI');
+// AWEI Calculation Function
+function calculateAWEI(image) {
+  var aweiSh = image.expression(
+    'B3 + 2.5 * B8 - 1.5 * (B11 + B12) - 0.25 * B2',
+    {
+      'B2': image.select('B2'),
+      'B3': image.select('B3'),
+      'B8': image.select('B8'),
+      'B11': image.select('B11'),
+      'B12': image.select('B12')
+    }
+  ).rename('AWEIsh');
 
-var habitatBands = s2.select(['B4', 'B3', 'B2'])
-  .addBands(ndvi)
-  .addBands(mndwi)
-  .addBands(ndbi);
+  return image.addBands(aweiSh);
+}
 
-var training = habitatBands.sample({region: roi, scale: 10, numPixels: 5000});
-var clusterer = ee.Clusterer.wekaKMeans(5).train(training);
-var habitatMap = habitatBands.cluster(clusterer);
+// Apply AWEI to Sentinel-2 dataset
+var s2WithAWEI = calculateAWEI(s2);
 
-var classNames = ['Open Water', 'Wetlands', 'Grassland', 'Riparian Woodland', 'Built-up'];
-var habitatPalette = ['#1E90FF', '#228B22', '#ADFF2F', '#8B4513', '#FF4500'];
+// Extract Water from AWEI (values > 0 indicate water)
+var aweiWater = s2WithAWEI.select('AWEIsh').gt(0).rename('AWEI_Water');
 
 // ==============================================
-// VISUALIZATION & UI COMPONENTS
+// PART 4: FUSION WATER MAP (Combining JRC, SAR, AWEI)
 // ==============================================
-var lakeOlBolosat = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
+function fusionWaterMap(year) {
+  var jrcImg = jrcDataset.filter(ee.Filter.calendarRange(year, year, 'year')).first();
+  var sarImg = sarWater.filter(ee.Filter.calendarRange(year, year, 'year')).mean();
+  
+  // Fusion: Water detected by either JRC, SAR, or AWEI
+  var fusion = ee.Image(0)
+    .where(jrcImg.eq(3), 1)  // JRC detects water
+    .where(sarImg.eq(1), 1)  // SAR detects water
+    .where(aweiWater.eq(1), 1) // AWEI detects water
+    .rename('Fusion_Water');
 
-var startYear = 2014, endYear = 2021, currentYear = startYear;
+  return fusion;
+}
+
+// ==============================================
+// VISUALIZATION SETTINGS
+// ==============================================
+var waterPalette = {min: 0, max: 1, palette: ['black', 'blue']};
+
+// ==============================================
+// UI COMPONENTS
+// ==============================================
 var timeSlider = ui.DateSlider({
-  start: startYear + '-01-01', end: endYear + '-12-31', value: startYear + '-01-01',
-  period: 365, style: {width: '300px'},
+  start: 2014 + '-01-01',
+  end: 2021 + '-12-31', // Adjusted to exclude 2022 & 2023
+  value: 2014 + '-01-01',
+  period: 365,
   onChange: function(dateRange) {
-    currentYear = ee.Date(dateRange.start()).get('year').getInfo();
-    updateMap(currentYear);
-  }
+    var year = ee.Date(dateRange.start()).get('year').getInfo();
+    updateMap(year);
+  },
+  style: {width: '300px'}
 });
 
-var jrcVis = {min: 0, max: 3, palette: ['cccccc', 'ffffff', '99d9ea', '0000ff']};
-var sarVis = {min: 0, max: 1, palette: ['000000', '0000ff']};
-
+// Function to update map layers
 function updateMap(year) {
   Map.layers().reset();
   
   var jrcImg = jrcDataset.filter(ee.Filter.calendarRange(year, year, 'year')).first();
-  if (jrcImg) Map.addLayer(jrcImg.clip(lakeOlBolosat), jrcVis, 'JRC Water ' + year);
-  
+  if (jrcImg) Map.addLayer(jrcImg.clip(roi), waterPalette, 'JRC Water ' + year);
+
   var sarImg = sarWater.filter(ee.Filter.calendarRange(year, year, 'year')).mean();
-  if (sarImg) Map.addLayer(sarImg.clip(lakeOlBolosat), sarVis, 'SAR Water ' + year, false);
+  if (sarImg) Map.addLayer(sarImg.clip(roi), waterPalette, 'SAR Water ' + year, false);
+
+  Map.addLayer(aweiWater.clip(roi), waterPalette, 'AWEI Water', false);
   
-  if (jrcImg && sarImg) {
-    var agreement = jrcImg.eq(3).and(sarImg.eq(1));
-    Map.addLayer(agreement.clip(lakeOlBolosat), {palette: ['00ff00']}, 'Agreement', false);
-  }
-
-  var habitatLayer = Map.addLayer(habitatMap.clip(roi), {min: 0, max: 4, palette: habitatPalette}, 'Habitat Map', false);
-  return habitatLayer;
+  var fusion = fusionWaterMap(year);
+  Map.addLayer(fusion.clip(roi), {min: 0, max: 1, palette: ['black', 'cyan']}, 'Fusion Water', true);
 }
 
-// ✅ Function to check if Habitat Map is active
-function isHabitatMapActive() {
-  var layers = Map.layers();
-  for (var i = 0; i < layers.length(); i++) {
-    if (layers.get(i).getName() === 'Habitat Map' && layers.get(i).getShown()) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// ✅ Updated Autoplay Function with Habitat Check & Auto-Zoom to ROI
+// AutoPlay Function
+var currentYear = 2014;
 function autoplay() {
-  if (!isHabitatMapActive()) { 
-    timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
-    currentYear++;
-    if (currentYear > endYear) {
-      currentYear = startYear;
-      Map.centerObject(roi, 12); // Auto-zoom back to ROI after loop
-    }
-  }
+  timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
+  currentYear++;
+  if (currentYear > 2021) currentYear = 2014;
 }
-
 ui.util.setInterval(autoplay, 10000);
 
 // ==============================================
-// LEGEND (WATER + HABITAT CLASSIFICATION)
+// LEGEND (Water + Habitat Classification)
 // ==============================================
 var legend = ui.Panel({ style: {position: 'bottom-right', padding: '8px'} });
 legend.add(ui.Label('Water & Habitat Classification', {fontWeight: 'bold'}));
 
 var legendItems = [
-  {color: 'cccccc', label: 'No Data'},
-  {color: 'ffffff', label: 'Not Water'},
-  {color: '99d9ea', label: 'Seasonal Water'},
-  {color: '0000ff', label: 'Permanent Water'},
-  {color: '00ff00', label: 'Agreement (JRC & SAR)'}
+  {color: 'black', label: 'No Water'},
+  {color: 'blue', label: 'Detected Water'},
+  {color: 'cyan', label: 'Fusion Water'}
 ];
-
-classNames.forEach(function(name, i) {
-  legendItems.push({ color: habitatPalette[i], label: name });
-});
 
 legendItems.forEach(function(item) {
   var colorBox = ui.Label({style: {backgroundColor: item.color, padding: '8px', width: '20px', height: '20px'}});
@@ -140,26 +144,24 @@ legendItems.forEach(function(item) {
 Map.add(legend);
 
 // ==============================================
-// USER INTERFACE & ROI ZOOM
+// USER INTERFACE
 // ==============================================
 var titleLabel = ui.Label({
   value: "Lake Ol' Bolossat Water & Habitat Monitoring",
   style: {fontWeight: 'bold', fontSize: '18px', color: '#1d3c34'}
 });
 
-var panel = ui.Panel({
-  widgets: [titleLabel, ui.Label('Select year and toggle layers:'), timeSlider],
-  style: {position: 'bottom-left', padding: '8px'}
-});
-
-Map.add(panel);
-updateMap(startYear);
-
-// ✅ Zoom to ROI Button
 var zoomButton = ui.Button({
   label: 'Zoom to ROI',
   onClick: function() {
     Map.centerObject(roi, 12);
   }
 });
-Map.add(zoomButton);
+
+var panel = ui.Panel({
+  widgets: [titleLabel, ui.Label('Select year and toggle layers:'), timeSlider, zoomButton],
+  style: {position: 'bottom-left', padding: '8px'}
+});
+
+Map.add(panel);
+updateMap(2014);
