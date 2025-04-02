@@ -1,132 +1,192 @@
-// Load the dataset for Lake Ol' Bolossat
-var dataset = ee.ImageCollection('JRC/GSW1_4/YearlyHistory')
-                .filterBounds(ee.Geometry.Point([36.43, -0.15]));
+// ==============================================
+// PART 1: OPTICAL WATER DETECTION (Existing JRC)
+// ==============================================
+var jrcDataset = ee.ImageCollection('JRC/GSW1_4/YearlyHistory')
+                  .filterBounds(ee.Geometry.Point([36.43, -0.15]));
 
-// Visualization parameters
-var visualization = {
-  bands: ['waterClass'],
-  min: 0.0,
-  max: 3.0,
-  palette: ['cccccc', 'ffffff', '99d9ea', '0000ff']
-};
+// ==============================================
+// PART 2: SAR WATER DETECTION (Sentinel-1 with Fixes)
+// ==============================================
+var sarCollection = ee.ImageCollection('COPERNICUS/S1_GRD')
+                   .filterBounds(ee.Geometry.Point([36.43, -0.15]))
+                   .filter(ee.Filter.eq('instrumentMode', 'IW'))
+                   .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) // Ensure 'VV' exists
+                   .map(function(image) {
+                      return image.select(['VV']).copyProperties(image, ['system:time_start']);
+                   });
 
-// Define the region of interest for Lake Ol' Bolossat
-var lakeOlBolosat = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
-
-// Set up years to display (1984 to 2022)
-var startYear = 1984;
-var endYear = 2022;
-var currentYear = startYear;
-
-// Function to update the map layer based on the selected year
-function updateMap(year) {
-  Map.layers().reset(); // Clear all layers
-  var image = dataset.filter(ee.Filter.calendarRange(year, year, 'year')).first();
-  
-  if (image) {
-    Map.addLayer(image.clip(lakeOlBolosat), visualization, 'Lake OlBolossat ' + year);
-  } else {
-    print('No image available for year: ' + year);
-  }
+// Function to detect water using SAR
+function calculateSARWater(image) {
+  var filtered = image.focal_mean(50, 'circle', 'meters'); // Reduce speckle noise
+  var water = filtered.lt(-16); // Water threshold
+  return water.rename('water').set('system:time_start', image.get('system:time_start'));
 }
 
-// UI Components for the time player - TITLE MADE BOLD HERE
-var titleLabel = ui.Label({
-  value: "Lake Ol' Bolossat Water Coverage Analysis",
-  style: {fontWeight: 'bold', fontSize: '18px'}
+// Process SAR dataset
+var sarWater = sarCollection.map(calculateSARWater);
+
+// ==============================================
+// PART 3: HABITAT CLASSIFICATION
+// ==============================================
+var roi = ee.Geometry.Point([36.38, -0.12]).buffer(5000); // 5km buffer
+
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR')
+          .filterBounds(roi)
+          .filterDate('2021-01-01', '2021-12-31') // Removed 2022 & 2023
+          .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+          .map(function(image) { 
+            return image.select(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 
+                                 'B8', 'B8A', 'B9', 'B11', 'B12']); // Ensure uniform bands
+          })
+          .median();
+
+var ndvi = s2.normalizedDifference(['B8', 'B4']).rename('NDVI');
+var mndwi = s2.normalizedDifference(['B3', 'B11']).rename('MNDWI');
+var ndbi = s2.normalizedDifference(['B11', 'B8']).rename('NDBI');
+
+var habitatBands = s2.select(['B4', 'B3', 'B2'])
+  .addBands(ndvi)
+  .addBands(mndwi)
+  .addBands(ndbi);
+
+var training = habitatBands.sample({
+  region: roi,
+  scale: 10,
+  numPixels: 5000
 });
-var subtitleLabel = ui.Label("(Autoplay - Select Year)");
+
+var clusterer = ee.Clusterer.wekaKMeans(5).train(training);
+var habitatMap = habitatBands.cluster(clusterer);
+
+var classNames = [
+  'Open Water',
+  'Wetlands (Emergent Vegetation)',
+  'Grassland/Floodplain',
+  'Riparian Woodland',
+  'Agricultural/Built-up'
+];
+
+var habitatPalette = [
+  '#1E90FF',
+  '#228B22',
+  '#ADFF2F',
+  '#8B4513',
+  '#FF4500'
+];
+
+// ==============================================
+// VISUALIZATION & UI COMPONENTS
+// ==============================================
+var lakeOlBolosat = ee.Geometry.Rectangle([36.35, -0.25, 36.50, -0.05]);
+
+var startYear = 2014;
+var endYear = 2021; // Adjusted to exclude 2022 & 2023
+var currentYear = startYear;
 
 var timeSlider = ui.DateSlider({
-  start: '1984-01-01',
-  end: '2022-12-31',
-  value: '1984-01-01',
+  start: startYear + '-01-01',
+  end: endYear + '-12-31',
+  value: startYear + '-01-01',
   period: 365,
   onChange: function(dateRange) {
     var year = ee.Date(dateRange.start()).get('year').getInfo();
     currentYear = year;
     updateMap(year);
   },
-  style: {position: 'bottom-left', width: '300px'}
+  style: {width: '300px'}
 });
 
-Map.add(ui.Panel([titleLabel, subtitleLabel, timeSlider]));
+var jrcVis = {
+  min: 0.0,
+  max: 3.0,
+  palette: ['cccccc', 'ffffff', '99d9ea', '0000ff']
+};
 
-// Create the legend
-var legendTitle = ui.Label('Water Coverage', {
-  fontWeight: 'bold',
-  fontSize: '16px'
+var sarVis = {
+  min: 0,
+  max: 1,
+  palette: ['000000', '0000ff']
+};
+
+function updateMap(year) {
+  Map.layers().reset();
+  
+  var jrcImg = jrcDataset.filter(ee.Filter.calendarRange(year, year, 'year')).first();
+  if (jrcImg) {
+    Map.addLayer(jrcImg.clip(lakeOlBolosat), jrcVis, 'JRC Water ' + year);
+  }
+  
+  var sarImg = sarWater.filter(ee.Filter.calendarRange(year, year, 'year')).mean();
+  if (sarImg) {
+    Map.addLayer(sarImg.clip(lakeOlBolosat), sarVis, 'SAR Water ' + year, false);
+  }
+  
+  if (jrcImg && sarImg) {
+    var agreement = jrcImg.eq(3).and(sarImg.eq(1));
+    Map.addLayer(agreement.clip(lakeOlBolosat), {palette: ['00ff00']}, 'Agreement', false);
+  }
+  
+  Map.addLayer(habitatMap.clip(roi), {min: 0, max: 4, palette: habitatPalette}, 'Habitat Map', false);
+}
+
+// ZOOM TO ROI BUTTON
+// ==============================================
+var zoomButton = ui.Button({
+  label: 'Zoom to ROI',
+  onClick: function() {
+    Map.centerObject(roi, 12);
+  }
 });
+Map.add(zoomButton);
 
+// ==============================================
+// LEGEND
+// ==============================================
 var legend = ui.Panel({
-  widgets: [legendTitle],
   style: {position: 'bottom-right', padding: '8px'}
 });
+legend.add(ui.Label('Water & Habitat Classification', {fontWeight: 'bold'}));
 
-var palette = ['cccccc', 'ff0000', '99d9ea', '0000ff'];
-var names = ['No data', 'Not water', 'Seasonal water', 'Permanent water'];
+var legendItems = [
+  {color: 'cccccc', label: 'No Data'},
+  {color: 'ffffff', label: 'Not Water'},
+  {color: '99d9ea', label: 'Seasonal Water'},
+  {color: '0000ff', label: 'Permanent Water'},
+  {color: '00ff00', label: 'Agreement (JRC & SAR)'}
+];
 
-palette.forEach(function(color, index) {
-  var colorBox = ui.Label({
-    style: {
-      backgroundColor: color,
-      padding: '8px',
-      margin: '2px',
-      width: '20px',
-      height: '20px'
-    }
-  });
-
-  var description = ui.Label({
-    value: names[index],
-    style: {padding: '8px'}
-  });
-
-  legend.add(ui.Panel({
-    widgets: [colorBox, description],
-    layout: ui.Panel.Layout.Flow('horizontal')
-  }));
+legendItems.forEach(function(item) {
+  var colorBox = ui.Label({style: {backgroundColor: item.color, padding: '8px', width: '20px', height: '20px'}})
+  var description = ui.Label({value: item.label, style: {padding: '8px'}});
+  legend.add(ui.Panel({widgets: [colorBox, description], layout: ui.Panel.Layout.Flow('horizontal')}));
 });
 
 Map.add(legend);
 
-// Generate a bar chart for water extent over the years
-var yearlyWaterArea = dataset.map(function(img) {
-  var year = ee.Date(img.get('system:time_start')).get('year');
-  var waterArea = img.clip(lakeOlBolosat).eq(2).multiply(ee.Image.pixelArea()).reduceRegion({
-    reducer: ee.Reducer.sum(),
-    geometry: lakeOlBolosat,
-    scale: 30,
-    maxPixels: 1e13
-  }).get('waterClass');
-  return ee.Feature(null, {'year': year, 'waterArea': waterArea});
-});
-
-var waterExtentChart = ui.Chart.feature.byFeature({
-  features: yearlyWaterArea,
-  xProperty: 'year',
-  yProperties: ['waterArea']
-}).setOptions({
-  title: "Lake Ol' Bolossat Water Extent Over the Years",
-  vAxis: {title: 'Water Area (sq. km)'},
-  hAxis: {title: 'Year'},
-  colors: ['blue']
-});
-
-var chartPanel = ui.Panel({
-  widgets: [waterExtentChart],
-  style: {position: 'bottom-left', width: '350px', padding: '8px'}
-});
-Map.add(chartPanel);
-
-// Autoplay function
+// ==============================================
+// AUTOPLAY FUNCTION
+// ==============================================
 function autoplay() {
   timeSlider.setValue(ee.Date.fromYMD(currentYear, 1, 1));
   currentYear++;
   if (currentYear > endYear) {
-    currentYear = startYear; // Loop back to start year
+    currentYear = startYear;
   }
 }
-
-// Start autoplay with an interval of 10 seconds
 ui.util.setInterval(autoplay, 10000);
+
+// ==============================================
+// USER INTERFACE
+// ==============================================
+var titleLabel = ui.Label({
+  value: "Lake Ol' Bolossat Water & Habitat Monitoring",
+  style: {fontWeight: 'bold', fontSize: '18px', color: '#1d3c34'}
+});
+
+var panel = ui.Panel({
+  widgets: [titleLabel, ui.Label('Select year and toggle layers:'), timeSlider],
+  style: {position: 'bottom-left', padding: '8px'}
+});
+
+Map.add(panel);
+updateMap(startYear);
