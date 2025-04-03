@@ -157,20 +157,46 @@ Map.add(legend);
 // ==============================================
 var titleLabel = ui.Label({
   value: "Lake Ol' Bolossat Water & Habitat Monitoring",
-  style: {fontWeight: 'bold', fontSize: '18px', color: '#1d3c34'}
-});
-
-var zoomButton = ui.Button({
-  label: 'Zoom to ROI',
-  onClick: function() {
-    Map.centerObject(roi, 12);
+  style: {
+    fontWeight: 'bold',
+    fontSize: '18px',
+    color: '#1d3c34',
+    margin: '0 0 5px 0'
   }
 });
 
-var panel = ui.Panel({
-  widgets: [titleLabel, ui.Label('Select year and toggle layers:'), timeSlider, zoomButton],
-  style: {position: 'bottom-left', padding: '8px'}
+var descriptionLabel = ui.Label({
+  value: "Lake Ol' Bolossat, a biodiverse freshwater lake in Kenya's Aberdare Range, " +
+         "faces existential threats from anthropogenic pressures and climate variability. " +
+         "This study employs geospatial technologies to map habitat changes between 2014-2023, " +
+         "identifying: (1) open water (max depth 5m), (2) emergent Cyperus papyrus wetlands, " +
+         "(3) Vachellia xanthophloea woodlands, (4) seasonal grasslands, and (5) farmlands.",
+  style: {
+    fontSize: '13px',
+    color: '#333333',
+    margin: '0 0 10px 0',
+    whiteSpace: 'normal',  // Allow text wrapping
+    maxWidth: '520px'  // Optional: adjust width as needed
+  }
 });
 
+
+var panel = ui.Panel({
+  widgets: [
+    titleLabel,
+    descriptionLabel,
+    ui.Label('Select year and toggle layers:'),
+    timeSlider
+  ],
+  style: {
+    position: 'bottom-left',
+    padding: '10px',
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    maxWidth: '520px'
+  }
+});
+
+// Initialize map
+Map.centerObject(roi, 12);
 Map.add(panel);
 updateMap(2014);
